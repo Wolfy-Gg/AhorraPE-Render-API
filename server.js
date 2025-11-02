@@ -25,7 +25,7 @@ app.use(express.json()); // Permite que Express lea cuerpos JSON
 // RUTAS DE LA A P I
 // ====================================================
 
-// Versión: 1.1 - Incluye /registro
+// Versión: 1.3 - Fix de Columna 'nombre' y 'apellido'
 // Endpoint para verificar el estado de la API
 app.get('/status', async (req, res) => {
     try {
@@ -49,13 +49,14 @@ app.get('/status', async (req, res) => {
 // RUTA PRINCIPAL: REGISTRO DE USUARIOS (POST)
 // ----------------------------------------------------
 app.post('/registro', async (req, res) => {
-    // Nota: La tabla PostgreSQL usa 'nombre_completo'
-    const { nombre_completo, email, contrasena, id_distrito, id_moneda } = req.body;
+    // 🛑 CAMBIO CLAVE 1: Ahora se esperan 'nombre' y 'apellido' por separado
+    const { nombre, apellido, email, contrasena, id_distrito, id_moneda } = req.body;
 
-    if (!nombre_completo || !email || !contrasena || !id_moneda) {
+    // Se asume que id_distrito puede ser nulo, pero los demás no.
+    if (!nombre || !apellido || !email || !contrasena || !id_moneda) {
         return res.status(400).json({
             status: 400,
-            mensaje: "Faltan campos obligatorios: nombre_completo, email, contrasena e id_moneda."
+            mensaje: "Faltan campos obligatorios: nombre, apellido, email, contrasena e id_moneda."
         });
     }
 
@@ -65,12 +66,14 @@ app.post('/registro', async (req, res) => {
         const passwordHash = await bcrypt.hash(contrasena, saltRounds);
 
         // 2. Consulta de Inserción del Usuario
+        // 🛑 CAMBIO CLAVE 2: Incluimos 'nombre' y 'apellido' en la lista de columnas y valores.
         const queryText = `
-            INSERT INTO usuarios (nombre_completo, email, password_hash, id_distrito, id_moneda)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO usuarios (nombre, apellido, email, password_hash, id_distrito, id_moneda)
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id_usuario, email; 
         `;
-        const values = [nombre_completo, email, passwordHash, id_distrito, id_moneda];
+        // Los valores ahora coinciden con los $1, $2... en la consulta.
+        const values = [nombre, apellido, email, passwordHash, id_distrito, id_moneda];
 
         const result = await pool.query(queryText, values);
         
@@ -117,3 +120,4 @@ app.post('/registro', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Servidor Express escuchando en el puerto ${PORT}`);
 });
+
