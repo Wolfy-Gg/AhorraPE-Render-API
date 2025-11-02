@@ -1,28 +1,33 @@
 const express = require('express');
-const { Pool } = require('pg');
-const bcrypt = require('bcrypt');
-const cors = require('cors');
+const { Pool } = require('pg'); 
+const bcrypt = require('bcrypt'); // Librería para hashear contraseñas
+const cors = require('cors'); // Middleware para permitir peticiones desde cualquier origen (necesario para Render)
 
-// 1. CONFIGURACIÓN DE LA CONEXIÓN A POSTGRESQL
-const connectionString = "postgresql://ahorrape_db_user:j38kzLisZsCYVs6oFFu72l9zeWSIUJvY@dpg-d43lkjgdl3ps73a2b0d0-a.virginia-postgres.render.com/ahorrape_db"; 
+const app = express();
+// Render asignará un puerto automáticamente a través de la variable de entorno PORT
+const PORT = process.env.PORT || 10000;
+
+// Configuración de la Conexión a PostgreSQL
 const pool = new Pool({
-    connectionString: connectionString,
+    user: 'ahorrape_db_user', 
+    // Usamos el host completo para evitar ambigüedades
+    host: 'dpg-d43lkjgdl3ps73a2b0d0-a.virginia-postgres.render.com',     
+    database: 'ahorrape_db',         
+    password: 'j38kzLisZsCYVs6oFFu72l9zeWSIUJvY', 
+    port: 5432, 
+    // Opción crucial para que Render se conecte de forma segura
     ssl: {
-        rejectUnauthorized: false
+        rejectUnauthorized: false 
     }
 });
 
-const app = express();
-const PORT = process.env.PORT || 10000;
+// Middlewares
+app.use(cors()); // Permite peticiones CORS
+app.use(express.json()); // Permite parsear el cuerpo de la solicitud como JSON
 
-app.use(cors());
-app.use(express.json());
-
-// ====================================================
-// RUTAS DE LA A P I
-// ====================================================
-
-// RUTA DE PRUEBA DE RAÍZ (NUEVA): Si accedes a la URL base, obtendrás este mensaje.
+// ----------------------------------------------------
+// Ruta Raíz: Diagnóstico
+// ----------------------------------------------------
 app.get('/', (req, res) => {
     res.json({
         status: "Running",
@@ -30,96 +35,85 @@ app.get('/', (req, res) => {
     });
 });
 
-// Endpoint de Estado (GET /status)
-app.get('/status', async (req, res) => {
-    try {
-        await pool.query('SELECT 1');
-        res.json({ status: "OK", mensaje: "API AhorraPE y DB están accesibles." });
-    } catch (error) {
-        res.status(500).json({ status: "Error", mensaje: "La API funciona, pero la base de datos no es accesible." });
-    }
+// ----------------------------------------------------
+// Endpoint de Prueba: /status
+// ----------------------------------------------------
+app.get('/status', (req, res) => {
+    res.json({ 
+        status: 'OK', 
+        mensaje: 'API AhorraPE está funcionando correctamente.',
+        servicio: 'Render PostgreSQL'
+    });
 });
 
-
-// Endpoint de REGISTRO DE USUARIOS (POST /registro)
+// ----------------------------------------------------
+// Endpoint de Registro: POST /registro
+// ----------------------------------------------------
 app.post('/registro', async (req, res) => {
-    const { 
-        dni, nombre, apellido, fecha_nacimiento, sexo, 
-        email, contrasena, id_distrito, id_moneda 
-    } = req.body;
+    const { dni, nombre, apellido, fecha_nacimiento, sexo, email, contrasena, id_distrito, id_moneda } = req.body;
 
-    if (!nombre || !apellido || !email || !contrasena || !id_moneda) {
-        return res.status(400).json({
-            status: 400,
-            mensaje: "Faltan campos obligatorios."
-        });
+    // Validación básica de campos requeridos
+    if (!dni || !email || !contrasena) {
+        return res.status(400).json({ status: 400, mensaje: "Faltan campos requeridos (dni, email, contrasena)." });
     }
 
     try {
-        const passwordHash = await bcrypt.hash(contrasena, 10);
+        // 1. Hashear la contraseña con bcrypt
+        const saltRounds = 10;
+        const passwordHash = await bcrypt.hash(contrasena, saltRounds);
 
-        const queryText = `
+        // 2. Consulta de inserción
+        const query = `
             INSERT INTO usuarios (
                 dni, nombre, apellido, email, password_hash, 
                 fecha_nacimiento, sexo, id_distrito, id_moneda,
-                pref_idioma, pref_tema, pref_notificaciones, pref_ubicacion
+                pref_idioma, pref_tema, pref_notificaciones, google_id
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            RETURNING id_usuario; 
+            RETURNING id_usuario;
         `;
         
+        // VALORES POR DEFECTO CORREGIDOS
+        // CLAVE: pref_tema cambiado a 'Claro' (mayúscula inicial)
         const values = [
             dni, nombre, apellido, email, passwordHash,
             fecha_nacimiento, sexo, id_distrito, id_moneda,
-            'es', 'claro', true, null
+            'es', 'Claro', true, null 
         ];
 
-        const result = await pool.query(queryText, values);
-        
+        const result = await pool.query(query, values);
+
+        // 3. Respuesta de éxito
         res.status(201).json({
             status: 201,
             mensaje: "Usuario registrado exitosamente.",
             usuario_id: result.rows[0].id_usuario
         });
 
-    } catch (error) {
-        console.error('Error al procesar el registro:', error);
-        
-        if (error.code === '23505') { 
-            return res.status(400).json({
-                status: 400,
-                mensaje: "Error en el registro.",
-                error: "El DNI o el Email ya están registrados."
-            });
-        }
-        if (error.code === '23503') {
-            return res.status(400).json({
-                status: 400,
-                mensaje: "Error de clave foránea.",
-                error: "El ID de moneda o distrito proporcionado no existe."
-            });
-        }
+    } catch (err) {
+        console.error('Error durante el registro:', err);
 
-        res.status(500).json({
-            status: 500,
-            mensaje: "Error interno del servidor.",
-            error: error.message
+        // Manejo de error de duplicado (DNI o Email ya existe - restricción UNIQUE)
+        if (err.code === '23505') {
+            return res.status(409).json({ 
+                status: 409, 
+                mensaje: "Error de duplicidad: El DNI o el Email ya están registrados.",
+                error: err.detail
+            });
+        }
+        
+        // Manejo de cualquier otro error interno (ej: violación de CHECK, como la que acabamos de corregir)
+        res.status(500).json({ 
+            status: 500, 
+            mensaje: "Error interno del servidor.", 
+            error: err.message 
         });
     }
 });
 
 
-// Middleware para capturar rutas no definidas (404)
-app.use((req, res) => {
-    res.status(404).json({
-        status: 404,
-        mensaje: `Ruta no encontrada: ${req.method} ${req.originalUrl}`
-    });
+// Iniciamos el servidor, forzando a escuchar en 0.0.0.0 (solución para Render)
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Servidor Express escuchando en http://0.0.0.0:${PORT}`);
 });
-
-
-app.listen(PORT, () => {
-    console.log(`Servidor Express escuchando en el puerto ${PORT}`);
-});
-
 
