@@ -1,67 +1,119 @@
-// Importamos las librerías necesarias
 const express = require('express');
-const { Pool } = require('pg'); 
+const { Pool } = require('pg');
+const bcrypt = require('bcrypt');
+const cors = require('cors');
+
+// 1. CONFIGURACIÓN DE LA CONEXIÓN A POSTGRESQL (CRÍTICO)
+// Usa la cadena de conexión de tu base de datos Render
+// Ejemplo: postgresql://user:password@host:port/database
+const connectionString = "postgresql://ahorrape_db_user:j38kzLisZsCYVs6oFFu72l9zeWSIUJvY@dpg-d43lkjgdl3ps73a2b0d0-a.virginia-postgres.render.com/ahorrape_db"; 
+const pool = new Pool({
+    connectionString: connectionString,
+    ssl: {
+        rejectUnauthorized: false // Necesario para la conexión SSL a Render
+    }
+});
 
 const app = express();
-// Render asignará un puerto automáticamente a través de la variable de entorno PORT
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000; // Render usa el puerto 10000
 
-// Configuración de la Conexión a PostgreSQL (Tus Credenciales)
-// ESTOS DATOS YA ESTÁN PERSONALIZADOS.
-const pool = new Pool({
-    user: 'ahorrape_db_user', 
-    host: 'dpg-d43lkjgdl3ps73a2b0d0-a.virginia-postgres.render.com', // AGREGUÉ EL DOMINIO COMPLETO PARA MAYOR CLARIDAD
-    database: 'ahorrape_db',         
-    password: 'j38kzLisZsCYVs6oFFu72l9zeWSIUJvY', 
-    port: 5432, 
-    // Esta opción es crucial para que Render se conecte de forma segura
-    ssl: {
-        rejectUnauthorized: false 
-    }
-});
+// Middlewares
+app.use(cors()); // Permite peticiones desde el frontend (Android/Web)
+app.use(express.json()); // Permite que Express lea cuerpos JSON
 
-// Middleware para parsear JSON en las peticiones (si usas POST)
-app.use(express.json());
+// ====================================================
+// RUTAS DE LA A P I
+// ====================================================
 
-// ----------------------------------------------------
-// Endpoint de Prueba: /status
-// ----------------------------------------------------
-app.get('/status', (req, res) => {
-    res.json({ 
-        status: 'OK', 
-        mensaje: 'API AhorraPE está funcionando correctamente.',
-        servicio: 'Render PostgreSQL'
-    });
-});
-
-// ----------------------------------------------------
-// Endpoint PRINCIPAL: /monedas 
-// 🛑 MODIFICADO: Ahora usa la ruta /monedas y consulta la tabla monedas.
-// ----------------------------------------------------
-app.get('/monedas', async (req, res) => {
+// Versión: 1.1 - Incluye /registro
+// Endpoint para verificar el estado de la API
+app.get('/status', async (req, res) => {
     try {
-        // Ejecuta la consulta SQL para la tabla 'monedas' que creaste
-        const result = await pool.query('SELECT id, codigo, nombre, simbolo FROM monedas ORDER BY nombre ASC;');
-        
-        // Devuelve el resultado como JSON limpio
+        await pool.query('SELECT 1'); // Prueba simple de conexión
         res.json({
-            status: 200,
-            mensaje: 'Lista de monedas obtenida exitosamente.',
-            data: result.rows 
+            status: "OK",
+            mensaje: "API AhorraPE está funcionando correctamente.",
+            servicio: "Render PostgreSQL"
         });
-
-    } catch (err) {
-        console.error('Error ejecutando la consulta SQL', err);
-        // Si hay un error, devuelve un 500 para informar al cliente
-        res.status(500).json({ 
-            status: 500, 
-            mensaje: 'Error interno del servidor al consultar la base de datos.',
-            error: err.message
+    } catch (error) {
+        console.error('Error al probar la conexión con la base de datos:', error.message);
+        res.status(500).json({
+            status: "Error",
+            mensaje: "La API funciona, pero la base de datos no es accesible.",
+            error: error.message
         });
     }
 });
 
-// Iniciamos el servidor
-app.listen(port, () => {
-    console.log(`API AhorraPE escuchando en el puerto ${port}`);
+// ----------------------------------------------------
+// RUTA PRINCIPAL: REGISTRO DE USUARIOS (POST)
+// ----------------------------------------------------
+app.post('/registro', async (req, res) => {
+    // Nota: La tabla PostgreSQL usa 'nombre_completo'
+    const { nombre_completo, email, contrasena, id_distrito, id_moneda } = req.body;
+
+    if (!nombre_completo || !email || !contrasena || !id_moneda) {
+        return res.status(400).json({
+            status: 400,
+            mensaje: "Faltan campos obligatorios: nombre_completo, email, contrasena e id_moneda."
+        });
+    }
+
+    try {
+        // 1. Generar el Hash de la Contraseña (Seguridad)
+        const saltRounds = 10;
+        const passwordHash = await bcrypt.hash(contrasena, saltRounds);
+
+        // 2. Consulta de Inserción del Usuario
+        const queryText = `
+            INSERT INTO usuarios (nombre_completo, email, password_hash, id_distrito, id_moneda)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id_usuario, email; 
+        `;
+        const values = [nombre_completo, email, passwordHash, id_distrito, id_moneda];
+
+        const result = await pool.query(queryText, values);
+        
+        // 3. Respuesta Exitosa
+        res.status(201).json({
+            status: 201,
+            mensaje: "Usuario registrado exitosamente.",
+            usuario_id: result.rows[0].id_usuario
+        });
+
+    } catch (error) {
+        console.error('Error en el registro de usuario:', error);
+
+        // Manejo específico de error de email duplicado (PostgreSQL error code 23505)
+        if (error.code === '23505') {
+            return res.status(400).json({
+                status: 400,
+                mensaje: "Error en el registro.",
+                error: "El email ya está registrado."
+            });
+        }
+        
+        // Manejo de error de clave foránea (id_moneda o id_distrito no existe) (PostgreSQL error code 23503)
+        if (error.code === '23503') {
+            return res.status(400).json({
+                status: 400,
+                mensaje: "Error de clave foránea.",
+                error: "El ID de moneda o distrito proporcionado no existe."
+            });
+        }
+
+        // Otro error
+        res.status(500).json({
+            status: 500,
+            mensaje: "Error interno del servidor al intentar registrar el usuario.",
+            error: error.message
+        });
+    }
+});
+
+// ====================================================
+// INICIO DEL SERVIDOR
+// ====================================================
+app.listen(PORT, () => {
+    console.log(`Servidor Express escuchando en el puerto ${PORT}`);
 });
