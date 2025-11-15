@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 10000;
 // Configuración de la Conexión a PostgreSQL
 const pool = new Pool({
     user: 'ahorrape_db_user', 
-    host: 'dpg-d43lkjgdl3ps73a2b0d0-a.virginia-postgres.render.com',      
+    host: 'dpg-d43lkjgdl3ps73a2b0d0-a.virginia-postgres.render.com',    
     database: 'ahorrape_db',         
     password: 'j38kzLisZsCYVs6oFFu72l9zeWSIUJvY', 
     port: 5432, 
@@ -60,6 +60,9 @@ app.post('/registro', async (req, res) => {
         // Hashear la contraseña antes de guardarla
         const saltRounds = 10;
         const passwordHash = await bcrypt.hash(contrasena, saltRounds);
+        
+        // 🚨 MEJORA DE REGISTRO: Guardar email en minúsculas para consistencia 
+        const lowerCaseEmail = email.toLowerCase();
 
         // Consulta de inserción de un nuevo usuario
         const query = `
@@ -74,7 +77,8 @@ app.post('/registro', async (req, res) => {
         
         // Valores con los datos del usuario y valores por defecto
         const values = [
-            dni, nombre, apellido, email, passwordHash,
+            dni, nombre, apellido, apellido, lowerCaseEmail, // Usar email en minúsculas
+            passwordHash,
             fecha_nacimiento, sexo, id_distrito, id_moneda,
             'es', 'Claro', true, null 
         ];
@@ -119,25 +123,30 @@ app.post('/login', async (req, res) => {
         // Solicitud inválida
         return res.status(400).json({ exito: false, error: "Faltan campos: email y contrasena son requeridos." });
     }
+    
+    // 🚨 CORRECCIÓN CLAVE: Normalizar el email a minúsculas antes de la búsqueda.
+    const lowerCaseEmail = email.toLowerCase();
 
     try {
-        // Buscar al usuario por email para obtener su hash de contraseña
+        // Buscar al usuario por email para obtener su hash de contraseña.
+        // Importante: No se usa LOWER(email) en la consulta, sino que normalizamos el input.
         const userQuery = `
             SELECT id_usuario, nombre, email, password_hash
             FROM usuarios
-            WHERE email = $1;
+            WHERE email = $1; 
         `;
-        const result = await pool.query(userQuery, [email]);
+        const result = await pool.query(userQuery, [lowerCaseEmail]); // Usamos el email en minúsculas
 
         if (result.rows.length === 0) {
-            // Usuario no encontrado (devolvemos 200 para evitar dar pistas sobre si el email existe)
+            // Usuario no encontrado
             return res.status(200).json({ exito: false, error: "Email o contraseña incorrectos." });
         }
 
         const user = result.rows[0];
         const passwordHash = user.password_hash;
-
-        // Comparar la contraseña ingresada con el hash guardado
+        
+        // Nota: Asegúrate de que el campo en tu base de datos sea 'password_hash' (como en el registro)
+        // La comparación con bcrypt.compare es sensible a la clave que recibe.
         const match = await bcrypt.compare(contrasena, passwordHash);
 
         if (match) {
@@ -145,8 +154,8 @@ app.post('/login', async (req, res) => {
             return res.status(200).json({
                 exito: true,
                 mensaje: "Inicio de sesión exitoso.",
-                id_usuario: user.id_usuario, // Formato snake_case para compatibilidad con el backend
-                nombre_usuario: user.nombre
+                idUsuario: user.id_usuario, // CamelCase para la App Android
+                nombreUsuario: user.nombre // CamelCase para la App Android
             });
         } else {
             // Contraseña incorrecta
